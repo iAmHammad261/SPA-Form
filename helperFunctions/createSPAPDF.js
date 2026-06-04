@@ -109,7 +109,7 @@ const getOrdinal = (n) => {
   return n + (s[(v - 20) % 10] || s[v] || s[0]);
 };
 
-export const createBookingFormPDF = async (dealId) => {
+export const createSPAPDF = async (dealId) => {
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ compress: true });
 
