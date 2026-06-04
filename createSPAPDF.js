@@ -1,369 +1,246 @@
-/**
- * Sale & Purchase Agreement (SPA) PDF Generator
- * Generates dynamic SPA with terms and dynamic fields from Bitrix24
- */
+import { callBX24Method } from "./helperFunctions/callBX24Method.js";
+import { getContactIdOfList } from "./helperFunctions/getContactIdsListOfDeal.js";
+import { getDealData } from "./helperFunctions/getDealData.js";
+import { getPropertyInformation } from "./helperFunctions/getPropertyInformation.js";
+import { getBuyerInformation } from "./helperFunctions/getBuyerInformation.js";
+import { getNomineeInformation } from "./helperFunctions/getNomineeInformation.js";
+import { getPaymentInformation } from "./helperFunctions/getPaymentInformation.js";
+import { getPaymentTermInformation } from "./helperFunctions/getPaymentTermInformation.js";
+import { addHeading } from "./helperFunctions/addHeading.js";
+import { drawRow } from "./helperFunctions/drawRow.js";
+import { getLocalBase64 } from "./helperFunctions/getBase64ImageFromLocalPath.js";
 
-export async function createSPAPDF(dealId) {
+const PCILogoForSPA = "./assets/PCILogoForReservationForm.png";
 
-  while (!window.jspdf) {
-    await new Promise(resolve => setTimeout(resolve, 100));
+function formatToReadableDate(isoDateString) {
+  if (!isoDateString) return "";
+  const date = new Date(isoDateString);
+  if (isNaN(date.getTime())) return "Invalid Date";
+  
+  const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+  const day = String(date.getDate()).padStart(2, "0");
+  const month = months[date.getMonth()];
+  const year = date.getFullYear();
+  
+  return `${day}-${month}-${year}`;
+}
+
+const formatCurrency = (val) => {
+  return "PKR " + Number(val).toLocaleString();
+};
+
+const getInstallmentDate = (startObj, monthOffset) => {
+  let d = new Date(startObj);
+  const targetDay = d.getDate();
+  d.setMonth(d.getMonth() + monthOffset);
+  
+  if (d.getDate() !== targetDay) {
+    d.setDate(0);
   }
+  
+  const day = d.getDate();
+  const month = d.toLocaleDateString("en-US", { month: "short" });
+  const year = d.getFullYear();
+  
+  return `${getOrdinal(day)} ${month}, ${year}`;
+};
 
+const getOrdinal = (n) => {
+  const s = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+};
 
-
+export const createSPAPDF = async (dealId) => {
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ format: "A4", orientation: "portrait" });
+  const doc = new jsPDF({ compress: true });
 
   try {
-    // Fetch all required data from Bitrix24
-    const dealData = await new Promise((resolve) => {
-      BX24.callMethod("crm.deal.get", { ID: dealId }, resolve);
-    });
-    const fields = dealData.result || {};
+    // Fetch all data using same pattern as booking form
+    const [dealData, contactIdsList] = await Promise.all([
+      getDealData(dealId),
+      getContactIdOfList(dealId),
+    ]);
 
-    const contactIds = fields.CONTACT_ID || [];
-    const buyerData = await fetchBuyerDetails(contactIds);
-    const paymentPlan = await fetchPaymentSchedule(fields);
+    const [propertyInformation, buyerData, nomineeInformation] = await Promise.all([
+      getPropertyInformation(dealId),
+      getBuyerInformation(contactIdsList),
+      getNomineeInformation(contactIdsList),
+    ]);
 
-    // Document Setup
+    const paymentInformation = await getPaymentInformation(propertyInformation, dealData);
+    const paymentTermInformation = await getPaymentTermInformation(paymentInformation, dealData);
+
     const pageWidth = doc.internal.pageSize.getWidth();
-    const pageHeight = doc.internal.pageSize.getHeight();
     const margin = 15;
+    const col1X = 15;
+    const col2X = 120;
     let currentY = margin;
 
-    // Title Section
-    currentY = addTitle(doc, currentY, pageWidth);
+    // Logo
+    const localImageData = await getLocalBase64(PCILogoForSPA);
+    doc.addImage(localImageData, "JPEG", 2, -5, 60, 60, undefined, "FAST");
 
-    // Header with parties
-    currentY = addHeader(doc, currentY, pageWidth, margin, fields, buyerData);
+    // Title
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(16);
+    doc.text("SALE AND PURCHASE AGREEMENT", pageWidth / 2, 30, { align: "center" });
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    const today = formatToReadableDate(new Date().toISOString().split('T')[0]);
+    doc.text(`This agreement is made on this day of ${today}`, pageWidth / 2, 40, { align: "center" });
+
+    currentY = 50;
+
+    // Header - Seller & Buyer
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    doc.text("Between:", margin, currentY);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    currentY += 8;
+
+    const sellerName = dealData.UF_CRM_1767352714903 || "BOX PARK 3";
+    const projectName = propertyInformation.PROJECT || "BOX PARK 3";
+    
+    doc.text(`M/s ${projectName} through Mr. ${sellerName}`, margin + 5, currentY);
+    currentY += 5;
+    doc.text("who are the Owners of the Project", margin + 5, currentY);
+    currentY += 5;
+
+    // Buyer Info
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9);
+    doc.text("Buyer:", margin, currentY + 5);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    const buyer = buyerData[0];
+    doc.text(`Name: ${buyer.NAME}`, margin + 5, currentY + 12);
+    doc.text(`S/O: ${buyer.SON_OF}`, margin + 5, currentY + 17);
+    doc.text(`CNIC: ${buyer.CNIC}`, margin + 5, currentY + 22);
+
+    currentY += 35;
+
+    // Unit Details Section
+    currentY = addHeading(doc, currentY, "UNIT DETAILS", margin, 11, true);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    
+    currentY += drawRow(doc, currentY, [
+      { label: "Unit No: ", value: propertyInformation.UNIT_NO, x: col1X },
+      { label: "Floor: ", value: propertyInformation.PROPERTY_FLOOR, x: col2X },
+    ]);
+
+    currentY += drawRow(doc, currentY, [
+      { label: "Size (Sq Ft): ", value: propertyInformation.GROSS_AREA, x: col1X },
+      { label: "Rate (PKR/Sq Ft): ", value: propertyInformation.PRICE_PER_SQFT, x: col2X },
+    ]);
+
+    currentY += drawRow(doc, currentY, [
+      { label: "Type: ", value: propertyInformation.PROPERTY_TYPE, x: col1X },
+      { label: "Project: ", value: projectName, x: col2X },
+    ]);
+
+    currentY += 5;
 
     // Payment Schedule
-    currentY = addPaymentSchedule(
-      doc,
-      currentY,
-      pageWidth,
-      margin,
-      paymentPlan,
-    );
+    if (currentY > doc.internal.pageSize.getHeight() - 100) {
+      doc.addPage();
+      currentY = 20;
+    }
 
-    // Property Details
-    currentY = addPropertyDetails(doc, currentY, pageWidth, margin, fields);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11);
+    doc.text("PAYMENT SCHEDULE", pageWidth / 2, currentY, { align: "center" });
+
+    currentY += 10;
+
+    // Generate payment schedule
+    const totalPaymentPlanUnits = paymentTermInformation.PAYMENT_PLAN_MONTHS || 36;
+    const amount = paymentTermInformation.INSTALLMENT_AMOUNT || paymentInformation.BOOKING_PRICE;
+    const isFullPlan = paymentTermInformation.PAYMENT_PLAN === "Full";
+    const rawString = paymentInformation.PAYMENT_START_DATE;
+
+    let startDate = new Date();
+    if (rawString && rawString.length >= 10) {
+      startDate = new Date(rawString.substring(0, 10));
+    }
+
+    const tableBody = [];
+    const installments = isFullPlan ? 1 : totalPaymentPlanUnits;
+
+    for (let i = 0; i < installments; i++) {
+      const displayAmount = isFullPlan ? paymentInformation.BOOKING_PRICE : amount;
+      const displayDate = getInstallmentDate(startDate, i);
+      
+      tableBody.push([
+        (i + 1).toString(),
+        isFullPlan ? "Full Payment" : "Instalment",
+        formatCurrency(displayAmount),
+        displayDate
+      ]);
+    }
+
+    doc.autoTable({
+      startY: currentY,
+      head: [["Sr. No", "Type", "Amount (PKR)", "Date"]],
+      body: tableBody,
+      theme: "grid",
+      styles: {
+        fontSize: 8,
+        cellPadding: 3,
+      },
+      columnStyles: {
+        0: { cellWidth: 20 },
+        1: { cellWidth: 40 },
+        2: { cellWidth: 50 },
+        3: { cellWidth: 50 }
+      },
+      headStyles: {
+        fillColor: [240, 240, 240],
+        fontStyle: "bold",
+      }
+    });
+
+    currentY = doc.lastAutoTable.finalY + 15;
 
     // Terms & Conditions (Fixed)
-    currentY = addTermsAndConditions(
-      doc,
-      currentY,
-      pageWidth,
-      margin,
-      pageHeight,
-    );
+    if (currentY > doc.internal.pageSize.getHeight() - 80) {
+      doc.addPage();
+      currentY = 20;
+    }
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    doc.text("TERMS AND CONDITIONS", margin, currentY);
+
+    currentY += 8;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7);
+
+    const termsText = `
+1. THE PROJECT: The Buyer acknowledges that the Seller is the Seller of the Project and Defence Housing Authority is Master Developer. The Project consists of Commercial Units/Shops purely for commercial purpose.
+
+2. DISCLAIMERS: The Seller shall not be responsible for any physical obstructions within the Master Community. All matters pertaining to usage and maintenance shall be the domain of the Property Manager.
+
+3. THE SALE: The Seller hereby sells to the Buyer who hereby purchases the property in accordance with the terms and conditions contained in this Agreement.
+
+4. PURCHASE PRICE AND PAYMENT: Only one application form can be used for booking of one unit. The Buyer shall ensure payments are made in Pakistani Rupees (PKR). Late payment fee is 0.1% per day, monthly maximum 3.0%. Default after 60 days will result in cancellation with 25% penalty.
+
+5. POSSESSION AND RISK: Possession shall be given on the handing over date. All risks pass to Buyer on Completion Date. Buyer must submit receipt at time of handover.
+    `;
+
+    const splitText = doc.splitTextToSize(termsText, pageWidth - 2 * margin);
+    doc.text(splitText, margin, currentY);
 
     return doc;
+
   } catch (error) {
     console.error("Error creating SPA PDF:", error);
     throw new Error(`Failed to generate SPA: ${error.message}`);
   }
-}
-
-/**
- * Add document title and logo
- */
-function addTitle(doc, y, pageWidth) {
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(18);
-  doc.text("SALE AND PURCHASE AGREEMENT", pageWidth / 2, y + 10, {
-    align: "center",
-  });
-
-  doc.setFontSize(10);
-  doc.setFont("helvetica", "normal");
-  const today = new Date().toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  });
-  doc.text(
-    `This agreement is made on this day of ${today}`,
-    pageWidth / 2,
-    y + 20,
-    { align: "center" },
-  );
-
-  return y + 30;
-}
-
-/**
- * Add buyer and seller information
- */
-function addHeader(doc, y, pageWidth, margin, fields, buyerData) {
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(10);
-  doc.text("Between:", margin, y);
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(9);
-
-  const sellerName = fields.UF_CRM_SELLER_NAME || "BOX PARK 3";
-  const projectName = fields.UF_CRM_PROJECT_NAME || "BOX PARK 3";
-  const projectLocation =
-    fields.UF_CRM_PROJECT_LOCATION ||
-    "Plot # 04, Commercial Mall, Road # 35 Mini, Extension-II Sector F DHA Phase 1, Rawalpindi";
-
-  let textLines = [
-    `M/s ${projectName} through Mr. ${sellerName}`,
-    `Project: ${projectName}`,
-    `Location: ${projectLocation}`,
-  ];
-
-  let lineY = y + 8;
-  textLines.forEach((line) => {
-    doc.text(line, margin + 5, lineY);
-    lineY += 5;
-  });
-
-  // Buyer Information
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(9);
-  doc.text("Buyer:", margin, lineY + 5);
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(8);
-  const buyerName = buyerData.NAME || "Mr. Muhammad Usman Nazar";
-  const buyerFatherName = buyerData.FATHER_NAME || "Nazar Elahi";
-  const buyerCNIC = buyerData.CNIC || "1330287836749";
-
-  doc.text(`Name: ${buyerName} S/O ${buyerFatherName}`, margin + 5, lineY + 12);
-  doc.text(`CNIC: ${buyerCNIC}`, margin + 5, lineY + 17);
-
-  // Nominee Information
-  const nomineeData = buyerData.NOMINEE || {};
-  if (nomineeData.NAME) {
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(9);
-    doc.text("Nominee:", margin, lineY + 24);
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(8);
-    doc.text(`Name: ${nomineeData.NAME}`, margin + 5, lineY + 31);
-    doc.text(`CNIC: ${nomineeData.CNIC}`, margin + 5, lineY + 36);
-
-    return lineY + 45;
-  }
-
-  return lineY + 25;
-}
-
-/**
- * Add dynamic payment schedule table
- */
-function addPaymentSchedule(doc, y, pageWidth, margin, paymentPlan) {
-  if (!paymentPlan || paymentPlan.length === 0) return y;
-
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(11);
-  doc.text("PAYMENT SCHEDULE", pageWidth / 2, y, { align: "center" });
-
-  y += 8;
-
-  const pageHeight = doc.internal.pageSize.getHeight();
-  const tableData = [];
-
-  // Headers
-  tableData.push(["Sr. No", "Type", "Amount (PKR)", "Date"]);
-
-  // Add payment rows
-  paymentPlan.forEach((payment, index) => {
-    const date = new Date(payment.date).toLocaleDateString("en-GB");
-    tableData.push([
-      (index + 1).toString(),
-      payment.type || "Instalment",
-      payment.amount.toLocaleString(),
-      date,
-    ]);
-  });
-
-  doc.autoTable({
-    startY: y,
-    head: [tableData[0]],
-    body: tableData.slice(1),
-    margin: { left: margin, right: margin },
-    columnStyles: {
-      0: { cellWidth: 20 },
-      1: { cellWidth: 40 },
-      2: { cellWidth: 50 },
-      3: { cellWidth: 50 },
-    },
-    fontSize: 8,
-    didDrawPage: (data) => {
-      // Check if we need a new page
-      if (data.cursor.y > pageHeight - 30) {
-        doc.addPage();
-      }
-    },
-  });
-
-  return doc.lastAutoTable.finalY + 10;
-}
-
-/**
- * Add property details section
- */
-function addPropertyDetails(doc, y, pageWidth, margin, fields) {
-  if (y > doc.internal.pageSize.getHeight() - 50) {
-    doc.addPage();
-    y = margin;
-  }
-
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(11);
-  doc.text("UNIT DETAILS", margin, y);
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(9);
-
-  const unitDetails = [
-    { label: "Unit No.", value: fields.UF_CRM_UNIT_NO || "BP3-G1-07" },
-    { label: "Floor", value: fields.UF_CRM_FLOOR || "Ground 1" },
-    { label: "Size (Sq Ft)", value: fields.UF_CRM_UNIT_SIZE || "235.2" },
-    { label: "Rate (PKR/Sq Ft)", value: fields.UF_CRM_UNIT_RATE || "41000" },
-    { label: "Type", value: fields.UF_CRM_UNIT_TYPE || "SHOP" },
-    { label: "Project", value: fields.UF_CRM_PROJECT_NAME || "BOX PARK III" },
-  ];
-
-  y += 8;
-  unitDetails.forEach((detail) => {
-    doc.text(`${detail.label}: ${detail.value}`, margin + 5, y);
-    y += 6;
-  });
-
-  return y + 10;
-}
-
-/**
- * Add fixed terms and conditions
- */
-function addTermsAndConditions(doc, y, pageWidth, margin, pageHeight) {
-  const terms = [
-    {
-      section: "1. THE PROJECT",
-      content: [
-        "1.1 The Buyer acknowledges and understands that the Seller is the Seller of the Project and Defence Housing Authority is Master Developer.",
-        "1.2 The Project consists of Commercial Units/Shops purely for commercial purpose.",
-        "1.3 The Master Developers shall remain owner of the residual land.",
-      ],
-    },
-    {
-      section: "2. DISCLAIMERS",
-      content: [
-        "2.1 The Seller shall not be responsible for any physical obstructions within the Master Community.",
-        "2.2 All matters pertaining to usage, maintenance shall be the domain of the Property Manager.",
-      ],
-    },
-    {
-      section: "3. THE SALE",
-      content: [
-        "The Seller hereby sells to the Buyer who hereby purchases the property in accordance with the terms and conditions contained in this Agreement.",
-      ],
-    },
-    {
-      section: "4. PURCHASE PRICE AND PAYMENT",
-      content: [
-        "4.1 Only one application form can be used for booking of one unit only.",
-        "4.2 The Buyer shall ensure that payments are made in Pakistani Rupees (PKR).",
-        "4.3 Late payment fee is 0.1% per day, monthly maximum 3.0%.",
-        "4.4 Default after 60 days will result in cancellation with 25% penalty.",
-      ],
-    },
-    {
-      section: "5. POSSESSION AND RISK",
-      content: [
-        "5.1 Possession shall be given on the handing over date.",
-        "5.2 All risks pass to Buyer on Completion Date.",
-        "5.3 Buyer must submit receipt at time of handover.",
-      ],
-    },
-  ];
-
-  terms.forEach((termBlock) => {
-    // Check if we need a new page
-    if (y > pageHeight - 40) {
-      doc.addPage();
-      y = margin;
-    }
-
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(9);
-    doc.text(termBlock.section, margin, y);
-    y += 6;
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(8);
-
-    termBlock.content.forEach((para) => {
-      const splitText = doc.splitTextToSize(para, pageWidth - 2 * margin);
-      doc.text(splitText, margin + 3, y);
-      y += splitText.length * 4 + 2;
-    });
-
-    y += 3;
-  });
-
-  return y;
-}
-
-/**
- * Fetch buyer details from Bitrix24
- */
-async function fetchBuyerDetails(contactId) {
-  try {
-    if (!contactId) return {};
-
-    const contact = await BX24.callMethod("crm.contact.get", { ID: contactId });
-    const contactFields = contact.data().result || {};
-
-    return {
-      NAME: contactFields.NAME || "",
-      FATHER_NAME: contactFields.LAST_NAME || "",
-      CNIC: contactFields.UF_CRM_CONTACT_CNIC || "",
-      PHONE: contactFields.PHONE || "",
-      EMAIL: contactFields.EMAIL || "",
-    };
-  } catch (error) {
-    console.warn("Error fetching buyer details:", error);
-    return {};
-  }
-}
-
-/**
- * Fetch payment schedule from Bitrix24
- */
-async function fetchPaymentSchedule(dealFields) {
-  try {
-    const payments = [];
-    const paymentPlanType = dealFields.UF_CRM_PAYMENT_PLAN_TYPE || "standard";
-
-    // Example: Generate 36 monthly payments
-    const startDate = new Date(
-      dealFields.UF_CRM_PAYMENT_START_DATE || new Date(),
-    );
-    const monthlyAmount = dealFields.UF_CRM_MONTHLY_PAYMENT || 105083;
-    const balloonAmount = dealFields.UF_CRM_BALLOON_PAYMENT || 400000;
-
-    for (let i = 0; i < 36; i++) {
-      const paymentDate = new Date(startDate);
-      paymentDate.setMonth(paymentDate.getMonth() + i);
-
-      payments.push({
-        number: i + 1,
-        type: i % 6 === 5 ? "Balloon" : "Instalment",
-        amount: i % 6 === 5 ? balloonAmount : monthlyAmount,
-        date: paymentDate.toISOString().split("T")[0],
-      });
-    }
-
-    return payments;
-  } catch (error) {
-    console.warn("Error fetching payment schedule:", error);
-    return [];
-  }
-}
+};
