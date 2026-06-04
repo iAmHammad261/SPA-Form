@@ -2,6 +2,13 @@ import { createSPAPDF } from './createSPAPDF.js';
 import { getDealInfo } from './helperFunctions/getDealInfo.js';
 
 document.addEventListener('DOMContentLoaded', async () => {
+
+  while (!window.BX24) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+
+
+
   try {
     const dealId = getDealInfo();
     console.log('Generating SPA for Deal ID:', dealId);
