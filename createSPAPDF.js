@@ -4,6 +4,13 @@
  */
 
 export async function createSPAPDF(dealId) {
+
+  while (!window.jspdf) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+
+
+
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ format: "A4", orientation: "portrait" });
 
