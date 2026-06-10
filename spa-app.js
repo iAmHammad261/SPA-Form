@@ -1,31 +1,31 @@
-import { getDealInfo } from "./helperFunctions/getDealInfo.js";
-import { createSPAPDF } from "./helperFunctions/createSPAPDF.js";
+import { getDealInfo } from "../helperFunctions/getDealInfo.js";
+import { createSPAPdf } from "./createSPAPdf.js";
 
 document.addEventListener("DOMContentLoaded", async () => {
-  try {
-    console.log("Generating SPA for Deal ID:", getDealInfo());
-    const dealId = getDealInfo();
+  let renamedFile = null;
+  let dealId = null;
 
-    var loader = document.getElementById("loader");
-    var iframe = document.getElementById("pdf-preview");
-    var errorContainer = document.getElementById("error-container");
-    var errorMessage = document.getElementById("error-message");
+  const loader = document.getElementById("loader");
+  const iframe = document.getElementById("pdf-preview");
+  const errorContainer = document.getElementById("error-container");
+  const errorMessage = document.getElementById("error-message");
+  const attachBtn = document.getElementById("attachToDealBtn");
+
+  try {
+    dealId = getDealInfo();
 
     if (loader) loader.style.display = "flex";
     if (iframe) iframe.style.display = "none";
 
-    var doc = await createSPAPDF(dealId);
-    var blob = doc.output("blob");
+    const doc = await createSPAPdf(dealId);
+    const blob = doc.output("blob");
 
-    const renamedFile = new File([blob], `SPA_${dealId}.pdf`, {
+    renamedFile = new File([blob], `SPA_${dealId}.pdf`, {
       type: "application/pdf",
     });
 
-    var blob_url = URL.createObjectURL(renamedFile);
-
+    const blob_url = URL.createObjectURL(renamedFile);
     iframe.src = blob_url;
-
-    iframe.style.display = "block";
 
     if (loader) loader.style.display = "none";
     if (iframe) iframe.style.display = "block";
@@ -37,7 +37,59 @@ document.addEventListener("DOMContentLoaded", async () => {
       errorContainer.style.display = "flex";
       errorMessage.innerText = error.message || "An unexpected error occurred.";
     }
-
-    console.error("SPA Generation Error:", error);
   }
+
+  attachBtn.addEventListener("click", async () => {
+    if (!renamedFile || !dealId) {
+      alert("PDF is not ready yet. Please wait for it to load.");
+      return;
+    }
+
+    attachBtn.disabled = true;
+    attachBtn.textContent = "Attaching...";
+
+    try {
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(",")[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(renamedFile);
+      });
+
+      await new Promise((resolve, reject) => {
+        BX24.callMethod(
+          "crm.deal.update",
+          {
+            id: dealId,
+            fields: {
+              // TODO: Replace with the actual SPA custom field ID from Bitrix24
+              UF_CRM_SPA_FIELD_ID_HERE: {
+                fileData: [`SPA_${dealId}.pdf`, base64],
+              },
+            },
+          },
+          (result) => {
+            if (result.error()) reject(result.error());
+            else resolve(result.data());
+          },
+        );
+      });
+
+      attachBtn.textContent = "Attached!";
+      attachBtn.style.borderColor = "green";
+      attachBtn.style.color = "green";
+    } catch (err) {
+      console.error("Attach to deal failed:", err);
+      attachBtn.textContent = "Failed";
+      attachBtn.style.borderColor = "red";
+      attachBtn.style.color = "red";
+    } finally {
+      setTimeout(() => {
+        attachBtn.textContent = "Attach to Deal";
+        attachBtn.style.borderColor = "";
+        attachBtn.style.color = "";
+        attachBtn.disabled = false;
+      }, 3000);
+    }
+  });
 });
